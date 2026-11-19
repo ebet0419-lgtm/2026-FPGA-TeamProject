@@ -1,9 +1,3 @@
-// ===================================================
-// [ VLSISYS Lab. ]
-// * Author     : Woong Choi (woongchoi@sm.ac.kr)
-// * Filename   : ssegdisp_upcnt.v
-// * Description :
-// ===================================================
 
 module ssegdisp_upcnt
 #(

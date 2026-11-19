@@ -1,9 +1,3 @@
-// ===================================================
-// [ VLSISYS Lab. ]
-// * Author     : Woong Choi (woongchoi@sm.ac.kr)
-// * Filename   : ssegdisp_mux6.v
-// * Description :
-// ===================================================
 
 module ssegdisp_mux6
 (

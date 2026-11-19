@@ -1,173 +1,109 @@
-`include "ctrl_nco.v"
-`include "ctrl_debouncer.v"
+`include "switch_event.v"
 
-module ctrl
-(
-    output reg       o_alarm_en,
-    output reg [1:0] o_mode,
-    output reg       o_alarm_min_clk,
-    output reg       o_alarm_sec_clk,
-    output reg       o_clock_min_clk,
-    output reg       o_clock_sec_clk,
-    output           o_1hz_clk,
-
-    input            i_clock_min_max,
-    input            i_clock_sec_max,
-    input      [7:0] i_sw,
-    input            i_clk,
-    input            i_rstn
+// 3-bit mode controller for a 24-hour HH:MM:SS clock project.
+// SW0: mode cycle, SW1: field cycle (SEC -> MIN -> HOUR),
+// SW2: increment, SW3: alarm enable toggle, SW4: decrement.
+module ctrl #(
+    parameter integer CLK_FREQ = 50000000,
+    parameter integer DEBOUNCE_COUNT = 250000
+)(
+    output reg        o_alarm_en,
+    output reg [2:0]  o_mode,
+    output reg [1:0]  o_target,       // 00=SEC, 01=MIN, 10=HOUR
+    output reg        o_inc_pulse,
+    output reg        o_dec_pulse,
+    output reg        o_timer_start,  // one-cycle pulse entering timer RUN
+    output wire       o_blink_en,
+    output wire       o_1hz_tick,
+    input  wire [7:0] i_sw,
+    input  wire       i_clk,
+    input  wire       i_rstn
 );
+    localparam [2:0] MODE_CLOCK_RUN = 3'b000;
+    localparam [2:0] MODE_CLOCK_SET = 3'b001;
+    localparam [2:0] MODE_ALARM_SET = 3'b010;
+    localparam [2:0] MODE_TIMER_SET = 3'b011;
+    localparam [2:0] MODE_TIMER_RUN = 3'b100;
 
-    wire       clk_1hz;
-    wire [7:0] sw;
+    localparam [1:0] TARGET_SEC  = 2'b00;
+    localparam [1:0] TARGET_MIN  = 2'b01;
+    localparam [1:0] TARGET_HOUR = 2'b10;
 
-    assign o_1hz_clk = clk_1hz;
+    wire sw0_event, sw1_event, sw2_event, sw3_event, sw4_event;
 
-    ctrl_debouncer
-    #(
-        .FREQDIV (5000000)
-    )
-    u_ctrl_debouncer
-    (
-        .o_sw   (sw),
-        .i_sw   (i_sw),
-        .i_clk  (i_clk),
-        .i_rstn (i_rstn)
-    );
+    switch_event #(.DEBOUNCE_COUNT(DEBOUNCE_COUNT)) u_sw0
+      (.i_clk(i_clk), .i_rstn(i_rstn), .i_sw(i_sw[0]), .o_event(sw0_event));
+    switch_event #(.DEBOUNCE_COUNT(DEBOUNCE_COUNT)) u_sw1
+      (.i_clk(i_clk), .i_rstn(i_rstn), .i_sw(i_sw[1]), .o_event(sw1_event));
+    switch_event #(.DEBOUNCE_COUNT(DEBOUNCE_COUNT)) u_sw2
+      (.i_clk(i_clk), .i_rstn(i_rstn), .i_sw(i_sw[2]), .o_event(sw2_event));
+    switch_event #(.DEBOUNCE_COUNT(DEBOUNCE_COUNT)) u_sw3
+      (.i_clk(i_clk), .i_rstn(i_rstn), .i_sw(i_sw[3]), .o_event(sw3_event));
+    switch_event #(.DEBOUNCE_COUNT(DEBOUNCE_COUNT)) u_sw4
+      (.i_clk(i_clk), .i_rstn(i_rstn), .i_sw(i_sw[4]), .o_event(sw4_event));
 
-    ctrl_nco
-    #(
-        .FREQDIV (50000000)
-    )
-    u_ctrl_nco
-    (
-        .o_clk  (clk_1hz),
-        .i_clk  (i_clk),
-        .i_rstn (i_rstn)
-    );
+    localparam integer DIV_COUNT = (CLK_FREQ > 1) ? CLK_FREQ : 2;
+    reg [31:0] sec_count;
+    reg tick_reg;
+    assign o_1hz_tick = tick_reg;
 
-    reg [1:0] c_mode;
-    reg [1:0] n_mode;
-
-    reg       c_targ;
-    reg       n_targ;
-
-    localparam MODE_CLOCK_OPR = 2'b00;
-    localparam MODE_CLOCK_SET = 2'b01;
-    localparam MODE_ALARM_SET = 2'b10;
-    localparam MODE_TIMER     = 2'b11;
-
-    localparam TARG_SEC = 1'b0;
-    localparam TARG_MIN = 1'b1;
-
-    // State Register
-    always @(posedge sw[0] or negedge i_rstn) begin
+    always @(posedge i_clk or negedge i_rstn) begin
         if (!i_rstn) begin
-            c_mode <= MODE_CLOCK_OPR;
-        end
-        else begin
-            c_mode <= n_mode;
+            sec_count <= 32'd0;
+            tick_reg <= 1'b0;
+        end else begin
+            tick_reg <= 1'b0;
+            if (sec_count >= DIV_COUNT-1) begin
+                sec_count <= 32'd0;
+                tick_reg <= 1'b1;
+            end else begin
+                sec_count <= sec_count + 1'b1;
+            end
         end
     end
 
-    always @(posedge sw[1] or negedge i_rstn) begin
+    always @(posedge i_clk or negedge i_rstn) begin
         if (!i_rstn) begin
-            c_targ <= TARG_SEC;
-        end
-        else begin
-            c_targ <= n_targ;
-        end
-    end
-
-    // Next Mode Logic
-    always @(*) begin
-        case (c_mode)
-            MODE_CLOCK_OPR: n_mode = MODE_CLOCK_SET;
-            MODE_CLOCK_SET: n_mode = MODE_ALARM_SET;
-            MODE_ALARM_SET: n_mode = MODE_TIMER;
-            MODE_TIMER:     n_mode = MODE_CLOCK_OPR;
-            default:        n_mode = MODE_CLOCK_OPR;
-        endcase
-    end
-
-    // Next Target Logic
-    always @(*) begin
-        case (c_targ)
-            TARG_SEC: n_targ = TARG_MIN;
-            TARG_MIN: n_targ = TARG_SEC;
-            default:  n_targ = TARG_SEC;
-        endcase
-    end
-
-    // Output Combinational Logic
-    always @(*) begin
-
-        o_mode          = c_mode;
-
-        o_clock_sec_clk = 1'b0;
-        o_clock_min_clk = 1'b0;
-
-        o_alarm_sec_clk = 1'b0;
-        o_alarm_min_clk = 1'b0;
-
-        case (c_mode)
-
-            MODE_CLOCK_OPR: begin
-                o_clock_sec_clk = clk_1hz;
-                o_clock_min_clk = i_clock_sec_max;
-            end
-
-            MODE_CLOCK_SET: begin
-                case (c_targ)
-                    TARG_SEC: begin
-                        o_clock_sec_clk = ~sw[2];
-                    end
-
-                    TARG_MIN: begin
-                        o_clock_min_clk = ~sw[2];
-                    end
-                endcase
-            end
-
-            MODE_ALARM_SET: begin
-                o_clock_sec_clk = clk_1hz;
-                o_clock_min_clk = i_clock_sec_max;
-
-                case (c_targ)
-                    TARG_SEC: begin
-                        o_alarm_sec_clk = ~sw[2];
-                    end
-
-                    TARG_MIN: begin
-                        o_alarm_min_clk = ~sw[2];
-                    end
-                endcase
-            end
-
-            MODE_TIMER: begin
-                // Clock continues to operate in Timer Mode
-                o_clock_sec_clk = clk_1hz;
-                o_clock_min_clk = i_clock_sec_max;
-            end
-
-            default: begin
-                o_clock_sec_clk = 1'b0;
-                o_clock_min_clk = 1'b0;
-                o_alarm_sec_clk = 1'b0;
-                o_alarm_min_clk = 1'b0;
-            end
-
-        endcase
-    end
-
-    // Alarm Enable Switch
-    always @(posedge sw[3] or negedge i_rstn) begin
-        if (!i_rstn) begin
+            o_mode <= MODE_CLOCK_RUN;
+            o_target <= TARGET_SEC;
             o_alarm_en <= 1'b0;
-        end
-        else begin
-            o_alarm_en <= ~o_alarm_en;
+            o_inc_pulse <= 1'b0;
+            o_dec_pulse <= 1'b0;
+            o_timer_start <= 1'b0;
+        end else begin
+            o_inc_pulse <= sw2_event;
+            o_dec_pulse <= sw4_event;
+            o_timer_start <= 1'b0;
+
+            if (sw0_event) begin
+                case (o_mode)
+                    MODE_CLOCK_RUN: o_mode <= MODE_CLOCK_SET;
+                    MODE_CLOCK_SET: o_mode <= MODE_ALARM_SET;
+                    MODE_ALARM_SET: o_mode <= MODE_TIMER_SET;
+                    MODE_TIMER_SET: begin
+                        o_mode <= MODE_TIMER_RUN;
+                        o_timer_start <= 1'b1;
+                    end
+                    MODE_TIMER_RUN: o_mode <= MODE_CLOCK_RUN;
+                    default: o_mode <= MODE_CLOCK_RUN;
+                endcase
+                o_target <= TARGET_SEC;
+            end
+
+            if (sw1_event) begin
+                case (o_target)
+                    TARGET_SEC: o_target <= TARGET_MIN;
+                    TARGET_MIN: o_target <= TARGET_HOUR;
+                    default: o_target <= TARGET_SEC;
+                endcase
+            end
+
+            if (sw3_event)
+                o_alarm_en <= ~o_alarm_en;
         end
     end
 
+    assign o_blink_en = (o_mode == MODE_CLOCK_SET) ||
+                        (o_mode == MODE_ALARM_SET) ||
+                        (o_mode == MODE_TIMER_SET);
 endmodule

@@ -1,27 +1,26 @@
-module clock_cnt
-#(
-    parameter MAX = 59
-)
-(
-    output reg [$clog2(MAX+1)-1:0] o_cnt,
-    output reg                     o_max,
-    input                          i_clk,
-    input                          i_rstn
+// Modulo up/down counter for clock fields.
+module clock_cnt #(
+    parameter integer MAX = 59
+)(
+    output reg [5:0] o_cnt,
+    input wire i_tick,
+    input wire i_inc,
+    input wire i_dec,
+    input wire i_rstn,
+    input wire i_clk
 );
-
     always @(posedge i_clk or negedge i_rstn) begin
-        if(!i_rstn) begin
-            o_cnt <= MAX;
-            o_max <= 0;
-        end else begin
-            if(o_cnt == MAX) begin
-                o_cnt <= 0;
-                o_max <= 1;
-            end else begin
-                o_cnt <= o_cnt + 1;
-                o_max <= 0;
-            end
+        if (!i_rstn)
+            o_cnt <= 6'd0;
+        else if (i_inc) begin
+            if (o_cnt >= MAX) o_cnt <= 6'd0;
+            else o_cnt <= o_cnt + 1'b1;
+        end else if (i_dec) begin
+            if (o_cnt == 0) o_cnt <= MAX;
+            else o_cnt <= o_cnt - 1'b1;
+        end else if (i_tick) begin
+            if (o_cnt >= MAX) o_cnt <= 6'd0;
+            else o_cnt <= o_cnt + 1'b1;
         end
     end
-
 endmodule
