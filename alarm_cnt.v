@@ -1,7 +1,6 @@
 `ifndef CLOCK_CNT_V
 `define CLOCK_CNT_V
 
-// Modulo up/down counter for clock fields.
 module clock_cnt #(
     parameter integer MAX = 59
 )(
