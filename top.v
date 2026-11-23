@@ -6,7 +6,7 @@
 `include "timer.v"       // Must implement the interface documented in TIMER_INTERFACE_KO.txt.
 `include "buzzer.v"
 `include "ssegdisp.v"
-
+`include "psd.v"
 // NEW top-level for the user's settings implementation.
 // This is NOT the teammate's temporary top.v.
 // Display format: HH:MM:SS on six 7-segment digits.
@@ -14,9 +14,14 @@ module top(
     output wire       o_buzzer,
     output wire [5:0] o_seg_enb,
     output wire [7:0] o_seg,
+    output wire       o_sclk,    
+    output wire       o_csn,   
+    output wire       o_din,      
+    input  wire       i_dout,
     input  wire [7:0] i_sw,
     input  wire       i_clk,
     input  wire       i_rstn
+    
 );
     wire [2:0] mode;
     wire [1:0] target;
@@ -38,6 +43,24 @@ module top(
 
     wire alarm_buzzer_enb;
     wire buzzer_enb;
+
+    wire [11:0] psd_data;
+    reg  [11:0] psd_sync1, psd_sync2;
+    wire        psd_near;
+
+    localparam [11:0] PSD_NEAR_TH = 12'h700; 
+
+    always @(posedge i_clk or negedge i_rstn) begin
+        if (!i_rstn) begin
+            psd_sync1 <= 12'd0;
+            psd_sync2 <= 12'd0;
+        end else begin
+            psd_sync1 <= psd_data;
+            psd_sync2 <= psd_sync1;
+        end
+    end
+
+    assign psd_near = (psd_sync2 >= PSD_NEAR_TH);
 
     ctrl #(
         .CLK_FREQ(50000000),
@@ -124,6 +147,17 @@ module top(
         .i_timer_run_sec(timer_run_sec)
     );
 
+    psd u_psd(
+        .o_sclk(o_sclk),
+        .o_csn(o_csn),
+        .o_din(o_din),
+        .o_data(psd_data),
+        .i_dout(i_dout),
+        .i_addr(3'd0),
+        .i_clk(i_clk),
+        .i_rstn(i_rstn)
+    );
+
     // Alarm triggers once when HH:MM:SS matches, then re-arms after time changes.
     reg alarm_done;
     reg alarm_active;
@@ -146,11 +180,8 @@ module top(
                 alarm_active <= 1'b1;
                 alarm_duration_count <= 28'd0;
             end else if (alarm_active) begin
-                if (alarm_duration_count >= 250000000-1) begin
+                if (psd_near) begin
                     alarm_active <= 1'b0;
-                    alarm_duration_count <= 28'd0;
-                end else begin
-                    alarm_duration_count <= alarm_duration_count + 1'b1;
                 end
             end
 
@@ -161,9 +192,25 @@ module top(
         end
     end
 
-    assign alarm_buzzer_enb = ~alarm_active;
-    assign buzzer_enb = alarm_buzzer_enb & timer_buzzer_enb;
+assign alarm_buzzer_enb = ~alarm_active;
 
+reg timer_alarm_muted;
+
+always @(posedge i_clk or negedge i_rstn) begin
+    if (!i_rstn) begin
+        timer_alarm_muted <= 1'b0;
+    end else begin
+        if (timer_buzzer_enb) begin
+            timer_alarm_muted <= 1'b0;
+        end
+        else if (psd_near) begin
+            timer_alarm_muted <= 1'b1;
+        end
+    end
+end
+
+assign buzzer_enb = alarm_buzzer_enb &
+                    (timer_buzzer_enb | timer_alarm_muted);
     buzzer u_buzzer(
         .o_out(o_buzzer),
         .i_enb(buzzer_enb),
